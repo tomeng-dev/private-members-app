@@ -1,0 +1,1 @@
+Use Elastic Beanstalk Node.js 24 platform. api/.nvmrc and package.json engines require Node >=24 <25.

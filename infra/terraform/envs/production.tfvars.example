@@ -1,0 +1,8 @@
+environment   = "production"
+domain_name   = "example.com"
+alert_email   = "ops@example.com"
+github_org    = "client-org"
+github_repo   = "private-members-app"
+db_multi_az   = true
+db_instance_class = "db.t4g.medium"
+budget_usd    = 400

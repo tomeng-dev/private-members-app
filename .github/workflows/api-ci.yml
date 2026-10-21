@@ -1,0 +1,109 @@
+# API CI: runs on every pull request and push that touches the API.
+# Lint -> Prisma validate -> migrate a throw-away MySQL -> unit tests -> e2e tests -> build.
+name: API CI
+
+on:
+  pull_request:
+    paths:
+      - "api/**"
+      - ".github/workflows/api-ci.yml"
+  push:
+    branches: [main, develop]
+    paths:
+      - "api/**"
+      - ".github/workflows/api-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: api
+
+jobs:
+  test:
+    name: Lint, test and build API
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci_root_pw
+          MYSQL_DATABASE: app_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci_root_pw"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
+    env:
+      NODE_ENV: test
+      # CI-only values. Never put real secrets here.
+      DATABASE_URL: mysql://root:ci_root_pw@127.0.0.1:3306/app_test
+      JWT_ACCESS_SECRET: ci-only-access-secret
+      JWT_REFRESH_SECRET: ci-only-refresh-secret
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: api/.nvmrc
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install dependencies (exact versions from package-lock.json)
+        run: npm ci
+
+      - name: Lint (no auto-fix in CI)
+        run: npm run lint:ci
+
+      - name: Validate Prisma schema
+        run: npx prisma validate
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Apply migrations to the test database
+        run: npx prisma migrate deploy
+
+      - name: Generate throw-away seed credentials for this run
+        # Random per run, so no reusable password lives in the repo.
+        run: |
+          echo "SEED_ADMIN_PASSWORD=ci-$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+          echo "SEED_INVITE_CODE=CI-$(openssl rand -hex 6)" >> "$GITHUB_ENV"
+
+      - name: Seed roles and super-admin
+        run: npx prisma db seed
+        env:
+          SUPER_ADMIN_EMAIL: admin@example.com
+
+      - name: Check migrations match schema.prisma
+        # Exit code 2 = the schema has changes that are not in a migration.
+        # Fix locally with: npx prisma migrate dev --name <describe-change>
+        run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+
+      - name: Unit tests (Vitest)
+        run: npm test
+
+      - name: End-to-end tests (Vitest + Nest, against MySQL service)
+        run: npm run test:e2e
+        env:
+          SUPER_ADMIN_EMAIL: admin@example.com
+
+      - name: Build
+        run: npm run build
+
+      - name: Dependency audit (fails on critical issues)
+        run: npm audit --omit=dev --audit-level=critical

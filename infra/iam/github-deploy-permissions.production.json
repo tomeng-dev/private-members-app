@@ -1,0 +1,111 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "UploadApiBundles",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject"],
+      "Resource": "arn:aws:s3:::<EB_DEPLOY_BUCKET>/api/*"
+    },
+    {
+      "Sid": "ElasticBeanstalkDeploy",
+      "Effect": "Allow",
+      "Action": [
+        "elasticbeanstalk:CreateApplicationVersion",
+        "elasticbeanstalk:DescribeApplicationVersions",
+        "elasticbeanstalk:UpdateEnvironment",
+        "elasticbeanstalk:DescribeEnvironments",
+        "elasticbeanstalk:DescribeEvents"
+      ],
+      "Resource": [
+        "arn:aws:elasticbeanstalk:us-east-1:<AWS_ACCOUNT_ID>:application/<EB_APPLICATION_NAME>",
+        "arn:aws:elasticbeanstalk:us-east-1:<AWS_ACCOUNT_ID>:applicationversion/<EB_APPLICATION_NAME>/*",
+        "arn:aws:elasticbeanstalk:us-east-1:<AWS_ACCOUNT_ID>:environment/<EB_APPLICATION_NAME>/<EB_ENVIRONMENT_NAME>"
+      ]
+    },
+    {
+      "Sid": "ElasticBeanstalkDescribeAnywhere",
+      "Effect": "Allow",
+      "Action": [
+        "elasticbeanstalk:DescribeEnvironments",
+        "elasticbeanstalk:DescribeApplicationVersions",
+        "elasticbeanstalk:DescribeEvents"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ResourcesEbTouchesOnYourBehalfDuringUpdate",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:GetTemplate",
+        "cloudformation:DescribeStackResource",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:DescribeStacks",
+        "cloudformation:UpdateStack",
+        "cloudformation:CancelUpdateStack",
+        "autoscaling:DescribeAutoScalingGroups",
+        "autoscaling:DescribeLaunchConfigurations",
+        "autoscaling:DescribeScalingActivities",
+        "autoscaling:SuspendProcesses",
+        "autoscaling:ResumeProcesses",
+        "ec2:DescribeInstances",
+        "ec2:DescribeImages",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeVpcs",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeTargetHealth",
+        "s3:GetObject",
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EbPlatformBucket",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::elasticbeanstalk-us-east-1-<AWS_ACCOUNT_ID>",
+        "arn:aws:s3:::elasticbeanstalk-us-east-1-<AWS_ACCOUNT_ID>/*"
+      ]
+    },
+    {
+      "Sid": "WebAppsUpload",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::<APP_WEB_BUCKET>",
+        "arn:aws:s3:::<ADMIN_WEB_BUCKET>"
+      ]
+    },
+    {
+      "Sid": "WebAppsObjects",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:DeleteObject", "s3:GetObject"],
+      "Resource": [
+        "arn:aws:s3:::<APP_WEB_BUCKET>/*",
+        "arn:aws:s3:::<ADMIN_WEB_BUCKET>/*"
+      ]
+    },
+    {
+      "Sid": "CloudFrontInvalidate",
+      "Effect": "Allow",
+      "Action": ["cloudfront:CreateInvalidation", "cloudfront:GetInvalidation"],
+      "Resource": [
+        "arn:aws:cloudfront::<AWS_ACCOUNT_ID>:distribution/<APP_WEB_DISTRIBUTION_ID>",
+        "arn:aws:cloudfront::<AWS_ACCOUNT_ID>:distribution/<ADMIN_WEB_DISTRIBUTION_ID>"
+      ]
+    },
+    {
+      "Sid": "PreDeploySnapshotProductionOnly",
+      "Effect": "Allow",
+      "Action": ["rds:CreateDBSnapshot", "rds:DescribeDBSnapshots", "rds:AddTagsToResource"],
+      "Resource": [
+        "arn:aws:rds:us-east-1:<AWS_ACCOUNT_ID>:db:<RDS_INSTANCE_ID>",
+        "arn:aws:rds:us-east-1:<AWS_ACCOUNT_ID>:snapshot:pre-deploy-*"
+      ]
+    }
+  ]
+}

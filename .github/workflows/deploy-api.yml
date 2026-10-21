@@ -1,0 +1,216 @@
+# Deploy API to Elastic Beanstalk.
+# main -> build -> staging (automatic) -> production (manual approval in GitHub Environment "production").
+# Database migrations run on the EB leader instance (api/.ebextensions/01-migrate.config)
+# BEFORE the new version goes live. Production takes an RDS snapshot first.
+name: Deploy API
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api/**"
+      - ".github/workflows/deploy-api.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build deployment bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: api
+    outputs:
+      version_label: ${{ steps.label.outputs.version_label }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: api/.nvmrc
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client and build
+        run: |
+          npx prisma generate
+          npm run build
+
+      - name: Create version label
+        id: label
+        run: echo "version_label=api-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Create zip bundle
+        run: |
+          # Everything Elastic Beanstalk needs. node_modules is NOT included;
+          # EB runs "npm install" (production dependencies) on the instance.
+          FILES=(dist package.json package-lock.json Procfile .nvmrc prisma prisma.config.ts .ebextensions)
+          [ -d .platform ] && FILES+=(.platform)
+          [ -d generated ] && FILES+=(generated)
+          zip -r ../api-bundle.zip "${FILES[@]}" -x "*.env" "*.env.*"
+          unzip -l ../api-bundle.zip | tail -n 3
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: api-bundle
+          path: api-bundle.zip
+          retention-days: 14
+
+  deploy-staging:
+    name: Deploy to staging
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: staging
+      url: ${{ vars.API_BASE_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION_LABEL: ${{ needs.build.outputs.version_label }}
+    steps:
+      - name: Download bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: api-bundle
+
+      - name: Configure AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload bundle to S3
+        run: aws s3 cp api-bundle.zip "s3://${{ vars.EB_DEPLOY_BUCKET }}/api/${VERSION_LABEL}.zip"
+
+      - name: Create application version (skip if it already exists)
+        run: |
+          if aws elasticbeanstalk describe-application-versions \
+               --application-name "${{ vars.EB_APPLICATION_NAME }}" \
+               --version-labels "$VERSION_LABEL" \
+               --query 'ApplicationVersions[0].VersionLabel' --output text | grep -q "$VERSION_LABEL"; then
+            echo "Version $VERSION_LABEL already exists."
+          else
+            aws elasticbeanstalk create-application-version \
+              --application-name "${{ vars.EB_APPLICATION_NAME }}" \
+              --version-label "$VERSION_LABEL" \
+              --description "commit ${GITHUB_SHA}" \
+              --source-bundle "S3Bucket=${{ vars.EB_DEPLOY_BUCKET }},S3Key=api/${VERSION_LABEL}.zip" \
+              --process
+          fi
+
+      - name: Deploy to Elastic Beanstalk (runs migrations on leader first)
+        run: |
+          aws elasticbeanstalk update-environment \
+            --environment-name "${{ vars.EB_ENVIRONMENT_NAME }}" \
+            --version-label "$VERSION_LABEL"
+          aws elasticbeanstalk wait environment-updated \
+            --environment-names "${{ vars.EB_ENVIRONMENT_NAME }}"
+
+      - name: Confirm the new version is live and healthy
+        run: |
+          read -r LIVE HEALTH <<< "$(aws elasticbeanstalk describe-environments \
+            --environment-names "${{ vars.EB_ENVIRONMENT_NAME }}" \
+            --query 'Environments[0].[VersionLabel,Health]' --output text)"
+          echo "Live version: $LIVE  Health: $HEALTH"
+          test "$LIVE" = "$VERSION_LABEL" || { echo "::error::Deployment did not switch to $VERSION_LABEL"; exit 1; }
+
+      - name: Smoke test /health
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 10 "${{ vars.API_HEALTH_URL }}"; then echo; echo "Healthy"; exit 0; fi
+            echo "Not healthy yet (attempt $i), waiting 10s..."; sleep 10
+          done
+          echo "::error::Health check failed"; exit 1
+
+  deploy-production:
+    name: Deploy to production (approval required)
+    needs: [build, deploy-staging]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: production
+      url: ${{ vars.API_BASE_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION_LABEL: ${{ needs.build.outputs.version_label }}
+    steps:
+      - name: Configure AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Download the same bundle that passed staging
+        uses: actions/download-artifact@v8
+        with:
+          name: api-bundle
+
+      - name: Upload bundle to S3
+        run: aws s3 cp api-bundle.zip "s3://${{ vars.EB_DEPLOY_BUCKET }}/api/${VERSION_LABEL}.zip"
+
+      - name: Create application version (skip if it already exists)
+        run: |
+          if aws elasticbeanstalk describe-application-versions \
+               --application-name "${{ vars.EB_APPLICATION_NAME }}" \
+               --version-labels "$VERSION_LABEL" \
+               --query 'ApplicationVersions[0].VersionLabel' --output text | grep -q "$VERSION_LABEL"; then
+            echo "Version $VERSION_LABEL already exists."
+          else
+            aws elasticbeanstalk create-application-version \
+              --application-name "${{ vars.EB_APPLICATION_NAME }}" \
+              --version-label "$VERSION_LABEL" \
+              --description "commit ${GITHUB_SHA}" \
+              --source-bundle "S3Bucket=${{ vars.EB_DEPLOY_BUCKET }},S3Key=api/${VERSION_LABEL}.zip" \
+              --process
+          fi
+
+      - name: Snapshot the production database before migrating
+        run: |
+          SNAP="pre-deploy-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          aws rds create-db-snapshot \
+            --db-instance-identifier "${{ vars.RDS_INSTANCE_ID }}" \
+            --db-snapshot-identifier "$SNAP"
+          echo "Waiting for snapshot $SNAP (can take several minutes)..."
+          aws rds wait db-snapshot-available --db-snapshot-identifier "$SNAP"
+          echo "Snapshot $SNAP is ready." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy to Elastic Beanstalk (runs migrations on leader first)
+        run: |
+          aws elasticbeanstalk update-environment \
+            --environment-name "${{ vars.EB_ENVIRONMENT_NAME }}" \
+            --version-label "$VERSION_LABEL"
+          aws elasticbeanstalk wait environment-updated \
+            --environment-names "${{ vars.EB_ENVIRONMENT_NAME }}"
+
+      - name: Confirm the new version is live and healthy
+        run: |
+          read -r LIVE HEALTH <<< "$(aws elasticbeanstalk describe-environments \
+            --environment-names "${{ vars.EB_ENVIRONMENT_NAME }}" \
+            --query 'Environments[0].[VersionLabel,Health]' --output text)"
+          echo "Live version: $LIVE  Health: $HEALTH"
+          test "$LIVE" = "$VERSION_LABEL" || { echo "::error::Deployment did not switch to $VERSION_LABEL"; exit 1; }
+
+      - name: Smoke test /health
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 10 "${{ vars.API_HEALTH_URL }}"; then echo; echo "Healthy"; exit 0; fi
+            echo "Not healthy yet (attempt $i), waiting 10s..."; sleep 10
+          done
+          echo "::error::Health check failed. See Section 8 (Rollbacks) of the CI/CD guide."; exit 1

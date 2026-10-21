@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# Secrets & environment — never commit. Only *.example files are tracked.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.p8
+*.p12
+*.key
+*.jks
+*.keystore
+*.mobileprovision
+**/android/key.properties
+key.properties
+**/google-services.json
+**/GoogleService-Info.plist
+firebase-service-account*.json
+*service-account*.json
+.npmrc
+
+# Terraform state & variables (keep *.tfvars.example)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ---------------------------------------------------------------------------
+# Dependencies, build output, caches
+# ---------------------------------------------------------------------------
+**/node_modules/
+**/dist/
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.pub-cache/
+**/coverage/
+*.tsbuildinfo
+
+# Uploads / local storage (user media, verification documents)
+**/uploads/**
+!**/uploads/.gitkeep
+**/storage/uploads/**
+
+# IDE / OS / logs
+**/.idea/
+**/.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+*.log
+
+# Local AI-tool scratch folders
+**/.claude/
+**/.windsurf/

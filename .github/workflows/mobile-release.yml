@@ -1,0 +1,147 @@
+# Mobile release: Android -> Google Play internal track, iOS -> TestFlight.
+# Run manually (Actions -> Mobile Release -> Run workflow) or push a tag like mobile-v1.0.0.
+# Signing material comes from the GitHub Environment "mobile" (secrets), never from the repo.
+name: Mobile Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Which platform to release"
+        type: choice
+        options: [both, android, ios]
+        default: both
+  push:
+    tags:
+      - "mobile-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-release
+  cancel-in-progress: false
+
+env:
+  # Build number must always go up. run_number + offset lets you continue from an existing number.
+  BUILD_NUMBER_OFFSET: ${{ vars.BUILD_NUMBER_OFFSET || '0' }}
+
+jobs:
+  android:
+    name: Android - build AAB and upload to Play internal
+    if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'android'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: mobile
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Java (needed by Android Gradle)
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ vars.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Compute build number
+        run: echo "BUILD_NUMBER=$(( GITHUB_RUN_NUMBER + BUILD_NUMBER_OFFSET ))" >> "$GITHUB_ENV"
+
+      - name: Restore upload keystore and key.properties from secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+          {
+            echo "storeFile=upload-keystore.jks"
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+          } > android/key.properties
+
+      - name: Build signed App Bundle (.aab)
+        run: |
+          flutter pub get
+          flutter build appbundle --release \
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }} \
+            --dart-define=APP_ENV=production
+
+      - name: Upload to Google Play (internal testing track)
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ vars.ANDROID_PACKAGE_NAME }}
+          releaseFiles: app/build/app/outputs/bundle/release/app-release.aab
+          track: internal
+          # Use "draft" until the app has been published once in Play Console.
+          status: ${{ vars.PLAY_RELEASE_STATUS || 'completed' }}
+
+      - name: Remove signing files
+        if: always()
+        run: rm -f android/app/upload-keystore.jks android/key.properties
+
+  ios:
+    name: iOS - build and upload to TestFlight
+    if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'ios'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    environment:
+      name: mobile
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ vars.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Set up Ruby and fastlane (from app/ios/Gemfile)
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: app/ios
+
+      - name: Compute build number
+        run: echo "BUILD_NUMBER=$(( GITHUB_RUN_NUMBER + BUILD_NUMBER_OFFSET ))" >> "$GITHUB_ENV"
+
+      - name: Prepare Flutter iOS build (no signing yet)
+        run: |
+          flutter pub get
+          flutter build ios --release --no-codesign \
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }} \
+            --dart-define=APP_ENV=production
+
+      - name: Sign, archive and upload to TestFlight (fastlane beta)
+        working-directory: app/ios
+        env:
+          MATCH_GIT_URL: ${{ vars.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID }}
+        run: bundle exec fastlane beta

@@ -1,0 +1,32 @@
+node_modules
+# Keep environment variables out of version control
+.env
+
+/generated/prisma
+.env
+uploads/**
+!uploads/.gitkeep
+
+# --- Secrets (also covered by the root .gitignore) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.p8
+*.p12
+*.key
+*.jks
+*.keystore
+key.properties
+android/key.properties
+google-services.json
+GoogleService-Info.plist
+coverage/
+build/
+dist/
+node_modules/
+
+# stale compiled leftovers
+prisma.config.d.ts
+prisma.config.js
+prisma.config.js.map

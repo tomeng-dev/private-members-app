@@ -1,0 +1,160 @@
+# Deploy the Flutter web apps (member web app + admin dashboard) to S3 + CloudFront.
+# main -> staging (automatic) -> production (manual approval in GitHub Environment "production").
+# Each environment is built separately because API_BASE_URL is compiled into the web app.
+name: Deploy Web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "admin/**"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+jobs:
+  deploy-staging:
+    name: Staging - ${{ matrix.site }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: staging
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: true
+      matrix:
+        site: [app, admin]
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ vars.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Pick bucket and CloudFront distribution for this site
+        run: |
+          if [ "${{ matrix.site }}" = "app" ]; then
+            echo "BUCKET=${{ vars.APP_WEB_BUCKET }}" >> "$GITHUB_ENV"
+            echo "DIST_ID=${{ vars.APP_WEB_DISTRIBUTION_ID }}" >> "$GITHUB_ENV"
+          else
+            echo "BUCKET=${{ vars.ADMIN_WEB_BUCKET }}" >> "$GITHUB_ENV"
+            echo "DIST_ID=${{ vars.ADMIN_WEB_DISTRIBUTION_ID }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Flutter web
+        working-directory: ${{ matrix.site }}
+        run: |
+          flutter pub get
+          flutter build web --release \
+            --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }} \
+            --dart-define=APP_ENV=staging
+
+      - name: Configure AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload to S3
+        working-directory: ${{ matrix.site }}/build/web
+        run: |
+          # 1) Long-lived files (fonts, images, canvaskit) - cache 1 day.
+          aws s3 sync . "s3://$BUCKET/" --delete \
+            --cache-control "public, max-age=86400" \
+            --exclude "index.html" --exclude "flutter_bootstrap.js" \
+            --exclude "flutter_service_worker.js" --exclude "main.dart.js" \
+            --exclude "version.json" --exclude "manifest.json"
+          # 2) Entry files that change every release - never cache.
+          for f in index.html flutter_bootstrap.js flutter_service_worker.js main.dart.js version.json manifest.json; do
+            if [ -f "$f" ]; then
+              aws s3 cp "$f" "s3://$BUCKET/$f" --cache-control "no-cache, no-store, must-revalidate"
+            fi
+          done
+
+      - name: Invalidate CloudFront cache
+        run: |
+          ID=$(aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" --query 'Invalidation.Id' --output text)
+          aws cloudfront wait invalidation-completed --distribution-id "$DIST_ID" --id "$ID"
+          echo "Invalidation $ID completed for ${{ matrix.site }}."
+
+  deploy-production:
+    name: Production - ${{ matrix.site }} (approval required)
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: true
+      matrix:
+        site: [app, admin]
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ vars.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Pick bucket and CloudFront distribution for this site
+        run: |
+          if [ "${{ matrix.site }}" = "app" ]; then
+            echo "BUCKET=${{ vars.APP_WEB_BUCKET }}" >> "$GITHUB_ENV"
+            echo "DIST_ID=${{ vars.APP_WEB_DISTRIBUTION_ID }}" >> "$GITHUB_ENV"
+          else
+            echo "BUCKET=${{ vars.ADMIN_WEB_BUCKET }}" >> "$GITHUB_ENV"
+            echo "DIST_ID=${{ vars.ADMIN_WEB_DISTRIBUTION_ID }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Flutter web
+        working-directory: ${{ matrix.site }}
+        run: |
+          flutter pub get
+          flutter build web --release \
+            --dart-define=API_BASE_URL=${{ vars.API_BASE_URL }} \
+            --dart-define=APP_ENV=production
+
+      - name: Configure AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload to S3
+        working-directory: ${{ matrix.site }}/build/web
+        run: |
+          aws s3 sync . "s3://$BUCKET/" --delete \
+            --cache-control "public, max-age=86400" \
+            --exclude "index.html" --exclude "flutter_bootstrap.js" \
+            --exclude "flutter_service_worker.js" --exclude "main.dart.js" \
+            --exclude "version.json" --exclude "manifest.json"
+          for f in index.html flutter_bootstrap.js flutter_service_worker.js main.dart.js version.json manifest.json; do
+            if [ -f "$f" ]; then
+              aws s3 cp "$f" "s3://$BUCKET/$f" --cache-control "no-cache, no-store, must-revalidate"
+            fi
+          done
+
+      - name: Invalidate CloudFront cache
+        run: |
+          ID=$(aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" --query 'Invalidation.Id' --output text)
+          aws cloudfront wait invalidation-completed --distribution-id "$DIST_ID" --id "$ID"
+          echo "Invalidation $ID completed for ${{ matrix.site }}."

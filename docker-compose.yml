@@ -1,0 +1,38 @@
+# Local dependencies for Private Members App (development only).
+# Passwords come from the root .env (see .env.example); defaults are placeholders.
+# MariaDB is also available natively on the box; this compose is for
+# Windows/macOS developers who prefer containers.
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: pma-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change_me_root_password}
+      MYSQL_DATABASE: private_members
+      MYSQL_USER: pma
+      MYSQL_PASSWORD: ${PMA_DB_PASSWORD:-change_me_db_password}
+    ports:
+      - "3306:3306"
+    volumes:
+      - pma_mysql_data:/var/lib/mysql
+    command: ["--default-authentication-plugin=caching_sha2_password", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: pma-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+volumes:
+  pma_mysql_data:

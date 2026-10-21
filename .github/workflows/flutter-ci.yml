@@ -1,0 +1,65 @@
+# Flutter CI: analyze, test and build web for the member app and the admin dashboard.
+name: Flutter CI
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "admin/**"
+      - ".github/workflows/flutter-ci.yml"
+  push:
+    branches: [main, develop]
+    paths:
+      - "app/**"
+      - "admin/**"
+      - ".github/workflows/flutter-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flutter-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flutter:
+    name: ${{ matrix.project }} - analyze, test, build web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [app, admin]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ vars.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Show Flutter version
+        run: flutter --version
+
+      - name: Get packages
+        run: flutter pub get
+
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Build web (CI check only, not deployed)
+        run: flutter build web --release --dart-define=API_BASE_URL=https://api.example.invalid

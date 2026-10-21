@@ -1,0 +1,10 @@
+output "vpc_id" { value = aws_vpc.main.id }
+output "rds_endpoint" { value = aws_db_instance.main.address }
+output "eb_cname" { value = aws_elastic_beanstalk_environment.api.cname }
+output "media_bucket" { value = aws_s3_bucket.media.id }
+output "web_bucket" { value = aws_s3_bucket.web.id }
+output "admin_bucket" { value = aws_s3_bucket.admin.id }
+output "cloudfront_app" { value = aws_cloudfront_distribution.app.domain_name }
+output "cloudfront_admin" { value = aws_cloudfront_distribution.admin.domain_name }
+output "secrets_arn" { value = aws_secretsmanager_secret.app.arn }
+output "github_actions_role_arn" { value = aws_iam_role.github_actions.arn }
